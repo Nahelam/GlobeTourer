@@ -1,34 +1,9 @@
 #include "pch.h"
 #include "GlobeTourer.h"
 
-
 BAKKESMOD_PLUGIN(GlobeTourer, "Globe Tourer", plugin_version, PLUGINTYPE_FREEPLAY)
 
 std::shared_ptr<CVarManagerWrapper> _globalCvarManager;
-
-void GlobeTourer::MarkObjectInvincible(class UObject* object)
-{
-	if (object)
-	{
-		object->ObjectFlags &= ~EObjectFlags::RF_Transient;
-		object->ObjectFlags &= ~EObjectFlags::RF_TagGarbageTemp;
-		object->ObjectFlags |= EObjectFlags::RF_Public;
-		object->ObjectFlags |= EObjectFlags::RF_Standalone;
-		object->ObjectFlags |= EObjectFlags::RF_MarkAsRootSet;
-		object->ObjectFlags |= EObjectFlags::RF_KeepForCooker;
-	}
-}
-
-void GlobeTourer::MarkObjectForDestory(class UObject* object)
-{
-	if (object)
-	{
-		object->ObjectFlags = 0;
-		object->ObjectFlags |= EObjectFlags::RF_Public;
-		object->ObjectFlags |= EObjectFlags::RF_Transient;
-		object->ObjectFlags |= EObjectFlags::RF_TagGarbageTemp;
-	}
-}
 
 void GlobeTourer::LogSchedules(const std::string& Func, TArray<struct FScheduledTournament>& Schedules)
 {
@@ -44,24 +19,6 @@ void GlobeTourer::LogSchedules(const std::string& Func, TArray<struct FScheduled
 	}
 }
 
-bool GlobeTourer::RegionIdValid(const std::string& regionId)
-{
-	bool valid = false;
-
-	if (!regionId.empty())
-	{
-		for (char c : regionId)
-		{
-			if (!isalpha(c) || !isupper(c))
-			{
-				return valid;
-			}
-		}
-		valid = true;
-	}
-	return valid;
-}
-
 void GlobeTourer::HookPost_SyncSchedule_0x1(ActorWrapper caller, void* params, std::string eventName)
 {
 	const auto p = reinterpret_cast<UAutoTour_TA_exec__AutoTour_TA__SyncSchedule_0x1_Params*>(params);
@@ -72,7 +29,7 @@ void GlobeTourer::HookPost_SyncSchedule_0x1(ActorWrapper caller, void* params, s
 	{
 		gameWrapper->Execute([this](...)
 			{
-				AutoTour->SyncSchedule();
+				OnlineGameTournaments->AutoTour->SyncSchedule();
 			});
 	}
 	else
@@ -81,19 +38,8 @@ void GlobeTourer::HookPost_SyncSchedule_0x1(ActorWrapper caller, void* params, s
 		{
 			p->RPC->Schedules.set_data(OriginalRPCSchedulesData);
 			p->RPC->Schedules.set_size(OriginalRPCSchedulesSize);
-			OriginalRPCSchedulesData = nullptr;
-			OriginalRPCSchedulesSize = -1;
-			delete[] AllTournamentsBuf;
-			AllTournamentsBuf = nullptr;
 		}
-		for (const auto& Schedule : AllSchedules)
-		{
-			Schedule->ObjectFlags = OriginalRPCObjectFlags;
-		}
-		OriginalRPCObjectFlags = 0;
-		AllSchedules.clear();
-		SchedulesReady = false;
-		TotalSchedules = 0;
+		CleanUp();
 		LOG("(HookPost_SyncSchedule_0x1) All good");
 	}
 }
@@ -104,15 +50,12 @@ void GlobeTourer::HookPre_SyncSchedule_0x1(ActorWrapper caller, void* params, st
 
 	LOG("PRE: {}", eventName);
 
-	LOG("(HookPre_SyncSchedule_0x1) RPC->Region: {}", p->RPC->Region.ToString());
-	LOG("(HookPre_SyncSchedule_0x1) RPC->Schedules size: {}", p->RPC->Schedules.size());
-
-	// LogSchedules("HookPre_SyncSchedule_0x1", p->RPC->Schedules);
+	//LogSchedules("HookPre_SyncSchedule_0x1", p->RPC->Schedules);
 
 	if (p->RPC)
 	{
-		OriginalRPCObjectFlags = p->RPC->ObjectFlags;
-		MarkObjectInvincible(p->RPC);
+		LOG("(HookPre_SyncSchedule_0x1) RPC->Region: {}", p->RPC->Region.ToString());
+		LOG("(HookPre_SyncSchedule_0x1) RPC->Schedules size: {}", p->RPC->Schedules.size());
 		AllSchedules.push_back(p->RPC);
 		TotalSchedules += p->RPC->Schedules.size();
 		LOG("(HookPre_SyncSchedule_0x1) Total saved schedules: {}", TotalSchedules);
@@ -179,108 +122,95 @@ void GlobeTourer::HookPre_SetRegion(ActorWrapper caller, void* params, std::stri
 
 	LOG("PRE: {}", eventName);
 
-	if (RegionsIndex >= 0)
+	LOG("(HookPre_SetRegion) Changing region to {}", Regions[RegionsIndex]);
+	FString__FString(&p->InRegion, Regions[RegionsIndex]);
+	RegionsIndex++;
+	if (RegionsIndex == ARRAY_LENGTH(Regions))
 	{
-		LOG("(HookPre_SetRegion) Changing region to {}", (*AllRegions)[RegionsIndex]->Id.ToString());
-		FString__OpEq(&p->InRegion, &((*AllRegions)[RegionsIndex]->Id));
-		RegionsIndex++;
-		if (RegionsIndex == AllRegions->size())
-		{
-			RegionsIndex = -1;
-			SchedulesReady = true;
-		}
+		SchedulesReady = true;
 	}
 	LOG("(HookPre_SetRegion) InRegion: {}", p->InRegion.ToString());
 }
 
-void GlobeTourer::HookPre_SyncSchedule(std::string eventName)
+void GlobeTourer::CleanUp()
 {
-	LOG("PRE: {}", eventName);
+	UnsetHooks();
 
-	if (RegionsIndex < 0)
+	if (AllTournamentsBuf)
 	{
-		if (GetRegions())
-		{
-			TotalSchedules = 0;
-			RegionsIndex = 0;
-			LOG("(HookPre_SyncSchedule) Starting schedules retrieval");
-		}
-		else
-		{
-			AutoTour->LastSyncTime = 0.0f - AutoTour->DataRefreshTime;
-			LOG("(HookPre_SyncSchedule) Could not start schedules retrieval");
-		}
+		delete[] AllTournamentsBuf;
 	}
+
+	InitVars();
 }
 
-bool GlobeTourer::GetRegions()
+void GlobeTourer::InitVars()
 {
-	bool regionsOk = false;
+	OnlineGameTournaments = nullptr;
+	AllTournamentsBuf = nullptr;
+	OriginalRPCSchedulesData = nullptr;
+	OriginalRPCSchedulesSize = -1;
+	TotalSchedules = -1;
+	RegionsIndex = -1;
+	InProgress = false;
+	SchedulesReady = false;
+	AllSchedules.clear();
+}
 
-	if (AutoTour->OnlineGame)
+void GlobeTourer::SetHooks()
+{
+	gameWrapper->HookEventWithCaller<ActorWrapper>("Function TAGame.RPC_AutoTour_GetSchedule_TA.SetRegion", std::bind_front(&GlobeTourer::HookPre_SetRegion, this));
+	gameWrapper->HookEventWithCaller<ActorWrapper>("Function TAGame.AutoTour_TA.__AutoTour_TA__SyncSchedule_0x1", std::bind_front(&GlobeTourer::HookPre_SyncSchedule_0x1, this));
+	gameWrapper->HookEventWithCallerPost<ActorWrapper>("Function TAGame.AutoTour_TA.__AutoTour_TA__SyncSchedule_0x1", std::bind_front(&GlobeTourer::HookPost_SyncSchedule_0x1, this));
+}
+
+void GlobeTourer::UnsetHooks()
+{
+	gameWrapper->UnhookEventPost("Function TAGame.AutoTour_TA.__AutoTour_TA__SyncSchedule_0x1");
+	gameWrapper->UnhookEvent("Function TAGame.AutoTour_TA.__AutoTour_TA__SyncSchedule_0x1");
+	gameWrapper->UnhookEvent("Function TAGame.RPC_AutoTour_GetSchedule_TA.SetRegion");
+	gameWrapper->UnhookEvent("Function TAGame.OnlineGameTournaments_TA.GetIsRegistered");
+}
+
+void GlobeTourer::PrepareForRefresh()
+{
+	TotalSchedules = 0;
+	RegionsIndex = 0;
+}
+
+void GlobeTourer::DoRefresh()
+{
+	gameWrapper->Execute([this](...)
+		{
+			OnlineGameTournaments->AutoTour->RefreshTournamentData(true);
+		});
+}
+
+void GlobeTourer::HookPre_GetIsRegistered(ActorWrapper caller, void* params, std::string eventName)
+{
+	const auto actualCaller = reinterpret_cast<UOnlineGameTournaments_TA*>(caller.memory_address);
+
+	LOG("PRE: {}", eventName);
+
+	if (!InProgress)
 	{
-		if (AutoTour->OnlineGame->Regions)
-		{
-			if (AutoTour->OnlineGame->Regions->Config)
-			{
-				if (AutoTour->OnlineGame->Regions->Config->Regions.size() > 0)
-				{
-					int32_t numEmptyIds = 0;
-					const auto regions = &(AutoTour->OnlineGame->Regions->Config->Regions);
-					for (int32_t i = 0; i < regions->size(); i++)
-					{
-						const auto& id = (*regions)[i]->Id;
-						if (id.empty() || !RegionIdValid(id.ToString()))
-						{
-							LOG("(GetRegions) ERROR: Region {} invalid", i);
-							numEmptyIds++;
-						}
-						else
-						{
-							LOG("(GetRegions) {} ({})", (*regions)[i]->Id.ToString(), i);
-						}
-					}
-					if (numEmptyIds == 0)
-					{
-						AllRegions = regions;
-						regionsOk = true;
-					}
-					LOG("(GetRegions) Got {} regions:", regions->size() - numEmptyIds);
-				}
-				else
-				{
-					LOG("(GetRegions) ERROR: AutoTour->OnlineGame->Regions->Config->Regions size is < 0");
-				}
-			}
-			else
-			{
-				LOG("(GetRegions) ERROR: AutoTour->OnlineGame->Regions->Config is NULL");
-			}
-		}
-		else
-		{
-			LOG("(GetRegions) ERROR: AutoTour->OnlineGame->Regions is NULL");
-		}
+		InProgress = true;
+		OnlineGameTournaments = actualCaller;
+		LOG("(HookPre_GetIsRegistered) Got OnlineGameTournaments");
+		PrepareForRefresh();
+		SetHooks();
+		DoRefresh();
 	}
 	else
 	{
-		LOG("(GetRegions) ERROR: AutoTour->OnlineGame is NULL");
+		LOG("(HookPre_GetIsRegistered) Retrieval already in progress");
 	}
-
-	return regionsOk;
 }
 
-
-void GlobeTourer::HookPre_RefreshTournamentData(ActorWrapper caller, void* params, std::string eventName)
+void GlobeTourer::OnGetAllSchedules(std::vector<std::string> params)
 {
-	const auto actualCaller = reinterpret_cast<UAutoTour_TA*>(caller.memory_address);
-
-	LOG("PRE: {}", eventName);
-
-	LOG("(HookPre_RefreshTournamentData) Got AutoTour");
-	AutoTour = actualCaller;
-	AutoTour->LastSyncTime = 0.0f - AutoTour->DataRefreshTime;
-	gameWrapper->UnhookEvent("Function TAGame.AutoTour_TA.RefreshTournamentData");
+	InitVars();
+	gameWrapper->HookEventWithCaller<ActorWrapper>("Function TAGame.OnlineGameTournaments_TA.GetIsRegistered", std::bind_front(&GlobeTourer::HookPre_GetIsRegistered, this));
 }
 
 void GlobeTourer::onLoad()
@@ -293,31 +223,6 @@ void GlobeTourer::onLoad()
 	GNames = reinterpret_cast<TArray<FNameEntry*>*>(GameBaseAddress + NamesOffset);
 
 	FString__FString = reinterpret_cast<FString__FString_t>(GameBaseAddress + FString__FStringOffset);
-	FString__OpEq = reinterpret_cast<FString__OpEq_t>(GameBaseAddress + FString__OpEqOffset);
 
-	AutoTour = nullptr;
-	AllRegions = nullptr;
-	AllTournamentsBuf = nullptr;
-	OriginalRPCSchedulesData = nullptr;
-	OriginalRPCSchedulesSize = -1;
-	OriginalRPCObjectFlags = 0;
-	TotalSchedules = -1;
-	RegionsIndex = -1;
-	SchedulesReady = false;
-	AllSchedules.clear();
-
-	gameWrapper->HookEvent("Function TAGame.AutoTour_TA.SyncSchedule", std::bind_front(&GlobeTourer::HookPre_SyncSchedule, this));
-	gameWrapper->HookEventWithCaller<ActorWrapper>("Function TAGame.AutoTour_TA.RefreshTournamentData", std::bind_front(&GlobeTourer::HookPre_RefreshTournamentData, this));
-	gameWrapper->HookEventWithCaller<ActorWrapper>("Function TAGame.AutoTour_TA.__AutoTour_TA__SyncSchedule_0x1", std::bind_front(&GlobeTourer::HookPre_SyncSchedule_0x1, this));
-	gameWrapper->HookEventWithCaller<ActorWrapper>("Function TAGame.RPC_AutoTour_GetSchedule_TA.SetRegion", std::bind_front(&GlobeTourer::HookPre_SetRegion, this));
-	gameWrapper->HookEventWithCallerPost<ActorWrapper>("Function TAGame.AutoTour_TA.__AutoTour_TA__SyncSchedule_0x1", std::bind_front(&GlobeTourer::HookPost_SyncSchedule_0x1, this));
-}
-
-void GlobeTourer::onUnload()
-{
-	gameWrapper->UnhookEvent("Function TAGame.AutoTour_TA.RefreshTournamentData");
-	gameWrapper->UnhookEvent("Function TAGame.AutoTour_TA.SyncSchedule");
-	gameWrapper->UnhookEvent("Function TAGame.AutoTour_TA.__AutoTour_TA__SyncSchedule_0x1");
-	gameWrapper->UnhookEvent("Function TAGame.RPC_AutoTour_GetSchedule_TA.SetRegion");
-	gameWrapper->UnhookEventPost("Function TAGame.AutoTour_TA.__AutoTour_TA__SyncSchedule_0x1");
+	cvarManager->registerNotifier("get_all_schedules", std::bind_front(&GlobeTourer::OnGetAllSchedules, this), "Get all tournament schedules", PERMISSION_ALL);
 }
