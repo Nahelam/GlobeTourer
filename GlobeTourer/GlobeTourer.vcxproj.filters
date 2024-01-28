@@ -84,9 +84,6 @@
     <ClCompile Include="GlobeTourer.cpp">
       <Filter>Plugin\src</Filter>
     </ClCompile>
-    <ClCompile Include="GuiBase.cpp">
-      <Filter>Plugin\src</Filter>
-    </ClCompile>
     <ClCompile Include="RLSDK\GameDefines.cpp">
       <Filter>RLSDK</Filter>
     </ClCompile>
@@ -174,9 +171,6 @@
       <Filter>Plugin\header</Filter>
     </ClInclude>
     <ClInclude Include="logging.h">
-      <Filter>Plugin\header</Filter>
-    </ClInclude>
-    <ClInclude Include="GuiBase.h">
       <Filter>Plugin\header</Filter>
     </ClInclude>
     <ClInclude Include="RLSDK\GameDefines.hpp">
